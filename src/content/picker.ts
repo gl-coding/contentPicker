@@ -335,14 +335,20 @@ function cleanup(result: SiteTemplate | null) {
   onSaveCallback = null;
 }
 
-export function startPicker(): Promise<SiteTemplate | null> {
+export function startPicker(existingTemplate?: SiteTemplate | null): Promise<SiteTemplate | null> {
   if (active) return Promise.resolve(null);
   active = true;
+
+  if (existingTemplate) {
+    contentSelectors = new Set(existingTemplate.contentSelectors);
+    excludeSelectors = new Set(existingTemplate.excludeSelectors);
+  }
 
   return new Promise((resolve) => {
     onSaveCallback = resolve;
 
     injectStyles();
+    syncAllHighlights();
     renderPanel();
 
     document.addEventListener('mousemove', onMouseMove, true);

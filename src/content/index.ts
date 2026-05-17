@@ -1,11 +1,12 @@
-import { buildMarkdownPayload, isDocumentReady, initTemplateFromStorage, loadTemplate, setTemplate } from './extractor';
+import { buildMarkdownPayload, isDocumentReady, initTemplateFromStorage, loadTemplate, setTemplate, dumpDebugInfo } from './extractor';
 import { startPicker, isPickerActive } from './picker';
 import type { SiteTemplate } from '../types/content';
 
 type MessageRequest =
-  | { type: 'EXTRACT_CONTENT' }
+  | { type: 'EXTRACT_CONTENT'; includeFrontMatter?: boolean }
   | { type: 'START_PICKER' }
-  | { type: 'GET_DOMAIN' };
+  | { type: 'GET_DOMAIN' }
+  | { type: 'DUMP_DEBUG' };
 
 type MessageResponse = {
   ok: boolean;
@@ -15,9 +16,9 @@ type MessageResponse = {
 
 initTemplateFromStorage();
 
-function doExtract(sendResponse: (response: MessageResponse) => void) {
+async function doExtract(includeFrontMatter: boolean, sendResponse: (response: MessageResponse) => void) {
   try {
-    const payload = buildMarkdownPayload();
+    const payload = await buildMarkdownPayload(includeFrontMatter);
     sendResponse({ ok: true, data: payload });
   } catch (error) {
     console.error('[ContentPicker] 提取失败', error);
@@ -25,23 +26,30 @@ function doExtract(sendResponse: (response: MessageResponse) => void) {
   }
 }
 
-function handleExtractContent(sendResponse: (response: MessageResponse) => void) {
+function handleExtractContent(includeFrontMatter: boolean, sendResponse: (response: MessageResponse) => void) {
   if (loadTemplate() !== null) {
-    doExtract(sendResponse);
+    doExtract(includeFrontMatter, sendResponse);
   } else {
-    initTemplateFromStorage().then(() => doExtract(sendResponse));
+    initTemplateFromStorage().then(() => doExtract(includeFrontMatter, sendResponse));
   }
   return true;
 }
 
 chrome.runtime.onMessage.addListener((message: MessageRequest, _sender, sendResponse) => {
   if (message.type === 'EXTRACT_CONTENT') {
-    return handleExtractContent(sendResponse);
+    return handleExtractContent(message.includeFrontMatter !== false, sendResponse);
   }
 
   if (message.type === 'GET_DOMAIN') {
     sendResponse({ ok: true, data: location.hostname });
     return false;
+  }
+
+  if (message.type === 'DUMP_DEBUG') {
+    dumpDebugInfo().then((debug) => {
+      sendResponse({ ok: true, data: debug });
+    });
+    return true;
   }
 
   if (message.type === 'START_PICKER') {
@@ -50,7 +58,8 @@ chrome.runtime.onMessage.addListener((message: MessageRequest, _sender, sendResp
       return false;
     }
 
-    startPicker().then((tpl) => {
+    const existing = loadTemplate();
+    startPicker(existing).then((tpl) => {
       if (tpl) {
         setTemplate(tpl);
         chrome.runtime.sendMessage({ type: 'SAVE_TEMPLATE', template: tpl });

@@ -71,6 +71,9 @@ function App() {
   const [filters, setFilters] = useState<Set<ContentFilter>>(new Set(['text', 'image', 'link']));
   const [templates, setTemplates] = useState<Record<string, SiteTemplate>>({});
   const [currentDomain, setCurrentDomain] = useState<string>('');
+  const [obsidianVault, setObsidianVault] = useState('');
+  const [obsidianFolder, setObsidianFolder] = useState('');
+  const [includeFrontMatter, setIncludeFrontMatter] = useState(true);
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: 'GET_TEMPLATES' }, (res) => {
@@ -93,6 +96,12 @@ function App() {
           if (res?.ok && typeof res.data === 'string') setCurrentDomain(res.data);
         });
       }
+    });
+    chrome.storage.local.get(['obsidianVault', 'obsidianFolder', 'includeFrontMatter', 'autoFetch'], (result) => {
+      if (result.obsidianVault) setObsidianVault(result.obsidianVault);
+      if (result.obsidianFolder) setObsidianFolder(result.obsidianFolder);
+      if (result.includeFrontMatter === false) setIncludeFrontMatter(false);
+      if (result.autoFetch === false) setAutoFetch(false);
     });
   }, []);
 
@@ -167,7 +176,7 @@ function App() {
         return;
       }
 
-      chrome.runtime.sendMessage({ type: 'FETCH_CONTENT', tabId: targetTab.id }, (response: FetchResponse) => {
+      chrome.runtime.sendMessage({ type: 'FETCH_CONTENT', tabId: targetTab.id, includeFrontMatter }, (response: FetchResponse) => {
         const runtimeError = chrome.runtime.lastError;
         if (runtimeError) {
           setLoading(false);
@@ -187,7 +196,7 @@ function App() {
         setActiveTab('markdown');
       });
     });
-  }, []);
+  }, [includeFrontMatter]);
 
   const autoFetchedRef = useRef(false);
   useEffect(() => {
@@ -219,6 +228,46 @@ function App() {
     URL.revokeObjectURL(url);
     showToast('已下载 Markdown 文件');
   }, [markdown, payload, showToast]);
+
+  const handleSaveToObsidian = useCallback(() => {
+    if (!obsidianVault) {
+      showToast('请先在设置中填写 Obsidian Vault 名称');
+      setActiveTab('settings');
+      return;
+    }
+    const filename = payload?.raw.metadata.title?.replace(/[^\w\u4e00-\u9fa5]+/g, '-') || 'content';
+    const path = obsidianFolder ? `${obsidianFolder}/${filename}` : filename;
+    const uri = `obsidian://new?vault=${encodeURIComponent(obsidianVault)}&file=${encodeURIComponent(path)}&content=${encodeURIComponent(markdown)}&overwrite`;
+    window.open(uri);
+    showToast('已发送到 Obsidian');
+  }, [markdown, payload, obsidianVault, obsidianFolder, showToast]);
+
+  const saveObsidianSettings = useCallback((vault: string, folder: string) => {
+    setObsidianVault(vault);
+    setObsidianFolder(folder);
+    chrome.storage.local.set({ obsidianVault: vault, obsidianFolder: folder });
+  }, []);
+
+  const handleDumpDebug = useCallback(() => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabsResult) => {
+      const tab = tabsResult[0];
+      if (!tab?.id) return;
+      chrome.runtime.sendMessage({ type: 'DUMP_DEBUG', tabId: tab.id }, (res) => {
+        if (res?.ok && typeof res.data === 'string') {
+          const blob = new Blob([res.data], { type: 'text/plain;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `debug-${location.hostname}-${Date.now()}.txt`;
+          a.click();
+          URL.revokeObjectURL(url);
+          showToast('调试信息已导出');
+        } else {
+          showToast('导出失败');
+        }
+      });
+    });
+  }, [showToast]);
 
   const handleBlockCopy = useCallback((block: ExtractedBlock) => {
     const snippet = block.href || block.content || block.alt || block.src || '';
@@ -386,10 +435,13 @@ function App() {
               <h3>Markdown 编辑器</h3>
               <div className="button-group">
                 <button className="btn" onClick={handleCopy} disabled={!markdown}>
-                  复制 Markdown
+                  复制
                 </button>
                 <button className="btn" onClick={handleDownload} disabled={!markdown}>
-                  下载 .md
+                  下载
+                </button>
+                <button className="btn" onClick={handleSaveToObsidian} disabled={!markdown} title="保存到 Obsidian Vault">
+                  Obsidian
                 </button>
               </div>
             </div>
@@ -438,21 +490,53 @@ function App() {
               <p className="muted">打开 Popup 时自动对当前页进行采集</p>
             </div>
             <label className="switch">
-              <input type="checkbox" checked={autoFetch} onChange={(event) => setAutoFetch(event.target.checked)} />
+              <input type="checkbox" checked={autoFetch} onChange={(event) => {
+                setAutoFetch(event.target.checked);
+                chrome.storage.local.set({ autoFetch: event.target.checked });
+              }} />
               <span className="slider" />
             </label>
           </div>
 
           <div className="card inline">
             <div>
-              <h4>导出提示</h4>
-              <p className="muted">下载和复制操作完成后显示通知</p>
+              <h4>附加信息</h4>
+              <p className="muted">在 Markdown 头部添加标题、URL 等元数据</p>
             </div>
             <label className="switch">
-              <input type="checkbox" checked={Boolean(toast)} readOnly />
-              <span className="slider disabled" />
+              <input type="checkbox" checked={includeFrontMatter} onChange={(event) => {
+                setIncludeFrontMatter(event.target.checked);
+                chrome.storage.local.set({ includeFrontMatter: event.target.checked });
+              }} />
+              <span className="slider" />
             </label>
           </div>
+
+          <article className="card">
+            <div className="card-header">
+              <h3>Obsidian 集成</h3>
+            </div>
+            <div className="card-row">
+              <span className="card-row-label">Vault 名称</span>
+              <input
+                type="text"
+                className="setting-input"
+                placeholder="My Vault"
+                value={obsidianVault}
+                onChange={(e) => saveObsidianSettings(e.target.value, obsidianFolder)}
+              />
+            </div>
+            <div className="card-row">
+              <span className="card-row-label">文件夹（可选）</span>
+              <input
+                type="text"
+                className="setting-input"
+                placeholder="Clippings"
+                value={obsidianFolder}
+                onChange={(e) => saveObsidianSettings(obsidianVault, e.target.value)}
+              />
+            </div>
+          </article>
 
           <article className="card">
             <div className="card-header">
@@ -482,6 +566,14 @@ function App() {
               </div>
             )}
           </article>
+
+          <div className="card inline">
+            <div>
+              <h4>调试</h4>
+              <p className="muted">导出页面源码、模版和匹配元素信息</p>
+            </div>
+            <button className="btn" onClick={handleDumpDebug}>导出调试信息</button>
+          </div>
         </section>
       )}
 

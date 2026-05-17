@@ -1,12 +1,13 @@
 import type { SiteTemplate } from '../types/content';
 
 type RuntimeMessage =
-  | { type: 'FETCH_CONTENT'; tabId?: number }
+  | { type: 'FETCH_CONTENT'; tabId?: number; includeFrontMatter?: boolean }
   | { type: 'START_PICKER'; tabId?: number }
   | { type: 'SAVE_TEMPLATE'; template: SiteTemplate }
   | { type: 'GET_TEMPLATES' }
   | { type: 'DELETE_TEMPLATE'; domain: string }
-  | { type: 'GET_DOMAIN'; tabId?: number };
+  | { type: 'GET_DOMAIN'; tabId?: number }
+  | { type: 'DUMP_DEBUG'; tabId?: number };
 
 type GenericResponse = {
   ok: boolean;
@@ -51,8 +52,9 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
     const tabId = getTargetTabId(message, sender);
     if (!tabId) { sendResponse({ ok: false, error: 'NO_ACTIVE_TAB' }); return; }
 
+    const includeFrontMatter = message.includeFrontMatter !== false;
     ensureContentScript(tabId)
-      .then(() => sendToTab(tabId, { type: 'EXTRACT_CONTENT' }, sendResponse))
+      .then(() => sendToTab(tabId, { type: 'EXTRACT_CONTENT', includeFrontMatter }, sendResponse))
       .catch((err) => sendResponse({ ok: false, error: (err as Error).message }));
     return true;
   }
@@ -85,6 +87,16 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
         sendResponse({ ok: true });
       });
     });
+    return true;
+  }
+
+  if (message.type === 'DUMP_DEBUG') {
+    const tabId = getTargetTabId(message, sender);
+    if (!tabId) { sendResponse({ ok: false, error: 'NO_ACTIVE_TAB' }); return; }
+
+    ensureContentScript(tabId)
+      .then(() => sendToTab(tabId, { type: 'DUMP_DEBUG' }, sendResponse))
+      .catch((err) => sendResponse({ ok: false, error: (err as Error).message }));
     return true;
   }
 
