@@ -127,12 +127,18 @@ function mapNodeToBlock(node: Element): ExtractedBlock | null {
 const NOISE_SELECTORS = 'script, style, noscript, iframe, svg';
 
 function findAllContentRoots(template: SiteTemplate): Element[] {
-  try {
-    const els = Array.from(document.querySelectorAll(template.contentSelector));
-    return els.length > 0 ? els : [document.body];
-  } catch {
-    return [document.body];
+  const set = new Set<Element>();
+  for (const sel of template.contentSelectors) {
+    try { document.querySelectorAll(sel).forEach((el) => set.add(el)); } catch { /* skip invalid */ }
   }
+  if (set.size === 0) return [document.body];
+
+  return Array.from(set).sort((a, b) => {
+    const pos = a.compareDocumentPosition(b);
+    if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+    if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+    return 0;
+  });
 }
 
 function cleanElement(el: Element, template: SiteTemplate): Element {
@@ -178,12 +184,25 @@ export function setTemplate(tpl: SiteTemplate | null) {
   cachedTemplate = tpl;
 }
 
+function migrateTemplate(raw: Record<string, unknown>): SiteTemplate {
+  const tpl = raw as SiteTemplate & { contentSelector?: string };
+  if (!tpl.contentSelectors && tpl.contentSelector) {
+    tpl.contentSelectors = [tpl.contentSelector];
+    delete tpl.contentSelector;
+  }
+  if (!Array.isArray(tpl.contentSelectors)) {
+    tpl.contentSelectors = [];
+  }
+  return tpl;
+}
+
 export function initTemplateFromStorage(): Promise<void> {
   return new Promise((resolve) => {
     const domain = location.hostname;
     chrome.storage.local.get('siteTemplates', (result) => {
-      const templates: Record<string, SiteTemplate> = result.siteTemplates ?? {};
-      cachedTemplate = templates[domain] ?? null;
+      const templates: Record<string, Record<string, unknown>> = result.siteTemplates ?? {};
+      const raw = templates[domain];
+      cachedTemplate = raw ? migrateTemplate(raw) : null;
       if (cachedTemplate) {
         console.info(`[ContentPicker] 已加载站点模版: ${domain}`);
       }

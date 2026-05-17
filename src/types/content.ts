@@ -29,7 +29,7 @@ export type MarkdownPayload = {
 export type SiteTemplate = {
   domain: string;
   name: string;
-  contentSelector: string;
+  contentSelectors: string[];
   excludeSelectors: string[];
   createdAt: number;
   updatedAt: number;

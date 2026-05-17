@@ -1,16 +1,43 @@
 import type { SiteTemplate } from '../types/content';
 
+const UNSAFE_CLASS_CHARS = /[()[\]{}@:/%,>~+!$^*=|\\]/;
+
+function isValidClass(c: string): boolean {
+  if (!c || c.startsWith('__cp_')) return false;
+  if (/^[_a-f0-9]{6,}$/i.test(c)) return false;
+  if (/^css-/.test(c)) return false;
+  if (UNSAFE_CLASS_CHARS.test(c)) return false;
+  return true;
+}
+
+function isSelectorValid(selector: string): boolean {
+  try {
+    document.querySelectorAll(selector);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function generateSelector(el: Element): string {
-  if (el.id) return `#${el.id}`;
+  if (el.id && isSelectorValid(`#${CSS.escape(el.id)}`)) {
+    return `#${CSS.escape(el.id)}`;
+  }
 
   const tag = el.tagName.toLowerCase();
-  const meaningfulClasses = Array.from(el.classList).filter(
-    (c) => !/^[_a-f0-9]{6,}$/i.test(c) && !/^css-/.test(c) && !c.startsWith('__cp_'),
-  );
+  const safeClasses = Array.from(el.classList).filter(isValidClass);
 
-  if (meaningfulClasses.length > 0) {
-    const selector = `${tag}.${meaningfulClasses.join('.')}`;
-    if (document.querySelectorAll(selector).length >= 1) return selector;
+  if (safeClasses.length > 0) {
+    const selector = `${tag}.${safeClasses.join('.')}`;
+    if (isSelectorValid(selector)) return selector;
+  }
+
+  const dataAttrs = Array.from(el.attributes)
+    .filter((a) => a.name.startsWith('data-') && a.value && a.value.length < 60)
+    .slice(0, 2);
+  if (dataAttrs.length > 0) {
+    const selector = dataAttrs.map((a) => `${tag}[${a.name}="${CSS.escape(a.value)}"]`).join('');
+    if (isSelectorValid(selector)) return selector;
   }
 
   const parent = el.parentElement;
@@ -30,7 +57,7 @@ const CLS_HOVER = '__cp_highlight_hover';
 const CLS_CONTENT = '__cp_highlight_content';
 const CLS_EXCLUDE = '__cp_highlight_exclude';
 
-let contentSelector: string | null = null;
+let contentSelectors: Set<string> = new Set();
 let excludeSelectors: Set<string> = new Set();
 let hoverSelector: string | null = null;
 let active = false;
@@ -56,7 +83,7 @@ function syncAllHighlights() {
   clearHighlight(CLS_CONTENT);
   clearHighlight(CLS_EXCLUDE);
 
-  if (contentSelector) applyHighlight(contentSelector, CLS_CONTENT);
+  for (const sel of contentSelectors) applyHighlight(sel, CLS_CONTENT);
   for (const sel of excludeSelectors) applyHighlight(sel, CLS_EXCLUDE);
 }
 
@@ -142,7 +169,10 @@ function renderPanel() {
     document.body.appendChild(panel);
   }
 
-  const contentCount = contentSelector ? countMatches(contentSelector) : 0;
+  const contentItems = Array.from(contentSelectors).map((sel) => ({
+    selector: sel,
+    count: countMatches(sel),
+  }));
   const excludeItems = Array.from(excludeSelectors).map((sel) => ({
     selector: sel,
     count: countMatches(sel),
@@ -155,9 +185,9 @@ function renderPanel() {
     </div>
     <div class="cp-bd">
       <div>
-        <div class="cp-label">内容区域（左键选择）</div>
-        ${contentSelector
-          ? `<div class="cp-sel cp-sel-content">${contentSelector}<span class="cp-count">匹配 ${contentCount} 个元素</span></div>`
+        <div class="cp-label">内容区域（左键 / Ctrl+左键多选）</div>
+        ${contentItems.length > 0
+          ? contentItems.map((item, i) => `<div class="cp-sel cp-sel-content" style="display:flex;justify-content:space-between;align-items:center;margin-top:4px"><span>${item.selector}<span class="cp-count">×${item.count}</span></span><button data-rmc="${i}" title="移除" style="background:none;border:none;color:#10b981;cursor:pointer;font-size:14px;padding:0 4px;flex-shrink:0">✕</button></div>`).join('')
           : '<div class="cp-empty">点击页面中的主要内容区域</div>'}
       </div>
       <div>
@@ -167,35 +197,39 @@ function renderPanel() {
           : '<div class="cp-empty">Shift+点击排除不需要的部分</div>'}
       </div>
     </div>
-    <div class="cp-tip">左键 = 选内容区域（绿色）<br>Shift+左键 = 排除元素（红色）<br>所有匹配相同选择器的元素都会一起高亮<br>ESC = 取消</div>
+    <div class="cp-tip">左键 = 替换内容区域 &nbsp; Ctrl+左键 = 追加内容区域<br>Shift+左键 = 排除元素 &nbsp; ESC = 取消</div>
     <div class="cp-ft">
       <button class="cp-btn cp-btn-cancel" id="__cp_cancel__">取消</button>
-      <button class="cp-btn cp-btn-save" id="__cp_save__" ${!contentSelector ? 'disabled' : ''}>保存模版</button>
+      <button class="cp-btn cp-btn-save" id="__cp_save__" ${contentSelectors.size === 0 ? 'disabled' : ''}>保存模版</button>
     </div>
   `;
 
   panel.querySelector('#__cp_cancel__')?.addEventListener('click', () => cleanup(null));
   panel.querySelector('#__cp_save__')?.addEventListener('click', handleSave);
+  panel.querySelectorAll('[data-rmc]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const idx = Number((e.currentTarget as HTMLElement).dataset.rmc);
+      const arr = Array.from(contentSelectors);
+      const sel = arr[idx];
+      if (sel) { contentSelectors.delete(sel); syncAllHighlights(); renderPanel(); }
+    });
+  });
   panel.querySelectorAll('[data-rm]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       const idx = Number((e.currentTarget as HTMLElement).dataset.rm);
       const arr = Array.from(excludeSelectors);
       const sel = arr[idx];
-      if (sel) {
-        excludeSelectors.delete(sel);
-        syncAllHighlights();
-        renderPanel();
-      }
+      if (sel) { excludeSelectors.delete(sel); syncAllHighlights(); renderPanel(); }
     });
   });
 }
 
 function handleSave() {
-  if (!contentSelector) return;
+  if (contentSelectors.size === 0) return;
   const tpl: SiteTemplate = {
     domain: location.hostname,
     name: document.title.slice(0, 50) || location.hostname,
-    contentSelector,
+    contentSelectors: Array.from(contentSelectors),
     excludeSelectors: Array.from(excludeSelectors),
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -258,8 +292,15 @@ function onClick(e: MouseEvent) {
     } else {
       excludeSelectors.add(sel);
     }
+  } else if (e.ctrlKey || e.metaKey) {
+    if (contentSelectors.has(sel)) {
+      contentSelectors.delete(sel);
+    } else {
+      contentSelectors.add(sel);
+    }
   } else {
-    contentSelector = sel;
+    contentSelectors.clear();
+    contentSelectors.add(sel);
   }
 
   syncAllHighlights();
@@ -284,7 +325,7 @@ function cleanup(result: SiteTemplate | null) {
   clearHighlight(CLS_EXCLUDE);
 
   hoverSelector = null;
-  contentSelector = null;
+  contentSelectors = new Set();
   excludeSelectors = new Set();
 
   document.getElementById(PANEL_ID)?.remove();

@@ -74,7 +74,17 @@ function App() {
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: 'GET_TEMPLATES' }, (res) => {
-      if (res?.ok && res.data) setTemplates(res.data as Record<string, SiteTemplate>);
+      if (res?.ok && res.data) {
+        const raw = res.data as Record<string, SiteTemplate & { contentSelector?: string }>;
+        for (const tpl of Object.values(raw)) {
+          if (!tpl.contentSelectors && tpl.contentSelector) {
+            tpl.contentSelectors = [tpl.contentSelector];
+            delete tpl.contentSelector;
+          }
+          if (!Array.isArray(tpl.contentSelectors)) tpl.contentSelectors = [];
+        }
+        setTemplates(raw as Record<string, SiteTemplate>);
+      }
     });
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tab = tabs[0];
@@ -459,7 +469,7 @@ function App() {
                   <div key={tpl.domain} className="template-item">
                     <div className="template-info">
                       <span className="template-domain">{tpl.domain}</span>
-                      <span className="template-selector">{tpl.contentSelector}</span>
+                      <span className="template-selector">{tpl.contentSelectors.join(', ')}</span>
                       {tpl.excludeSelectors.length > 0 && (
                         <span className="template-excludes">排除 {tpl.excludeSelectors.length} 项</span>
                       )}
