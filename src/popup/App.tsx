@@ -74,6 +74,7 @@ function App() {
   const [obsidianVault, setObsidianVault] = useState('');
   const [obsidianFolder, setObsidianFolder] = useState('');
   const [includeFrontMatter, setIncludeFrontMatter] = useState(true);
+  const [downloadFolder, setDownloadFolder] = useState('');
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: 'GET_TEMPLATES' }, (res) => {
@@ -97,11 +98,12 @@ function App() {
         });
       }
     });
-    chrome.storage.local.get(['obsidianVault', 'obsidianFolder', 'includeFrontMatter', 'autoFetch'], (result) => {
+    chrome.storage.local.get(['obsidianVault', 'obsidianFolder', 'includeFrontMatter', 'autoFetch', 'downloadFolder'], (result) => {
       if (result.obsidianVault) setObsidianVault(result.obsidianVault);
       if (result.obsidianFolder) setObsidianFolder(result.obsidianFolder);
       if (result.includeFrontMatter === false) setIncludeFrontMatter(false);
       if (result.autoFetch === false) setAutoFetch(false);
+      if (result.downloadFolder) setDownloadFolder(result.downloadFolder);
     });
   }, []);
 
@@ -216,18 +218,36 @@ function App() {
     }
   }, [markdown, showToast]);
 
-  const handleDownload = useCallback(() => {
-    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    const filename = payload?.raw.metadata.title?.replace(/[^\w\u4e00-\u9fa5]+/g, '-') || 'content';
+  const getFilename = useCallback(() => {
+    const plainText = markdown
+      .replace(/^---[\s\S]*?---\s*/, '')
+      .replace(/[#*`>\-|[\]()!]/g, '')
+      .trim();
+    const first8 = plainText.slice(0, 8).replace(/\s+/g, '').replace(/[^\w\u4e00-\u9fff]/g, '');
+    return first8 || 'content';
+  }, [markdown]);
 
-    anchor.href = url;
-    anchor.download = `${filename}.md`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    showToast('已下载 Markdown 文件');
-  }, [markdown, payload, showToast]);
+  const handleDownload = useCallback(() => {
+    const filename = getFilename();
+    const fullPath = downloadFolder ? `${downloadFolder}/${filename}.md` : `${filename}.md`;
+
+    const blob = new Blob([markdown], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+
+    chrome.downloads.download({
+      url,
+      filename: fullPath,
+      saveAs: false,
+      conflictAction: 'uniquify',
+    }, (downloadId) => {
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      if (chrome.runtime.lastError) {
+        showToast(`失败: ${chrome.runtime.lastError.message} | 路径: ${fullPath}`);
+      } else {
+        showToast(`已下载: ${fullPath} (id:${downloadId})`);
+      }
+    });
+  }, [markdown, getFilename, downloadFolder, showToast]);
 
   const handleSaveToObsidian = useCallback(() => {
     if (!obsidianVault) {
@@ -235,12 +255,12 @@ function App() {
       setActiveTab('settings');
       return;
     }
-    const filename = payload?.raw.metadata.title?.replace(/[^\w\u4e00-\u9fa5]+/g, '-') || 'content';
+    const filename = getFilename();
     const path = obsidianFolder ? `${obsidianFolder}/${filename}` : filename;
     const uri = `obsidian://new?vault=${encodeURIComponent(obsidianVault)}&file=${encodeURIComponent(path)}&content=${encodeURIComponent(markdown)}&overwrite`;
-    window.open(uri);
+    chrome.tabs.create({ url: uri });
     showToast('已发送到 Obsidian');
-  }, [markdown, payload, obsidianVault, obsidianFolder, showToast]);
+  }, [markdown, getFilename, obsidianVault, obsidianFolder, showToast]);
 
   const saveObsidianSettings = useCallback((vault: string, folder: string) => {
     setObsidianVault(vault);
@@ -510,6 +530,23 @@ function App() {
               }} />
               <span className="slider" />
             </label>
+          </div>
+
+          <div className="card inline">
+            <div>
+              <h4>下载目录</h4>
+              <p className="muted">相对于浏览器默认下载路径的子目录</p>
+            </div>
+            <input
+              type="text"
+              className="setting-input"
+              placeholder="ContentPicker"
+              value={downloadFolder}
+              onChange={(e) => {
+                setDownloadFolder(e.target.value);
+                chrome.storage.local.set({ downloadFolder: e.target.value });
+              }}
+            />
           </div>
 
           <article className="card">

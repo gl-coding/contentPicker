@@ -7,7 +7,8 @@ type RuntimeMessage =
   | { type: 'GET_TEMPLATES' }
   | { type: 'DELETE_TEMPLATE'; domain: string }
   | { type: 'GET_DOMAIN'; tabId?: number }
-  | { type: 'DUMP_DEBUG'; tabId?: number };
+  | { type: 'DUMP_DEBUG'; tabId?: number }
+  | { type: 'DOWNLOAD_FILE'; content: string; filename: string };
 
 type GenericResponse = {
   ok: boolean;
@@ -104,6 +105,27 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, sender, sendRespo
     chrome.storage.local.get('siteTemplates', (result) => {
       sendResponse({ ok: true, data: result.siteTemplates ?? {} });
     });
+    return true;
+  }
+
+  if (message.type === 'DOWNLOAD_FILE') {
+    const blob = new Blob([message.content], { type: 'text/markdown;charset=utf-8' });
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = reader.result as string;
+      chrome.downloads.download({
+        url: dataUrl,
+        filename: message.filename,
+        conflictAction: 'uniquify',
+      }, (downloadId) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          sendResponse({ ok: true, data: downloadId });
+        }
+      });
+    };
+    reader.readAsDataURL(blob);
     return true;
   }
 
