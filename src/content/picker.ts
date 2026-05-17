@@ -198,13 +198,16 @@ function renderPanel() {
       </div>
     </div>
     <div class="cp-tip">左键 = 替换内容区域 &nbsp; Ctrl+左键 = 追加内容区域<br>Shift+左键 = 排除元素 &nbsp; ESC = 取消</div>
+    <div id="__cp_verify_status__" style="display:none;padding:8px 16px;font-size:12px;color:#3b82f6;border-top:1px solid #e2e8f0;"></div>
     <div class="cp-ft">
       <button class="cp-btn cp-btn-cancel" id="__cp_cancel__">取消</button>
-      <button class="cp-btn cp-btn-save" id="__cp_save__" ${contentSelectors.size === 0 ? 'disabled' : ''}>保存模版</button>
+      <button class="cp-btn" id="__cp_verify__" style="background:#f0f9ff;color:#3b82f6;border-color:#93c5fd;" ${contentSelectors.size === 0 ? 'disabled' : ''}>验证</button>
+      <button class="cp-btn cp-btn-save" id="__cp_save__" ${contentSelectors.size === 0 ? 'disabled' : ''}>保存</button>
     </div>
   `;
 
   panel.querySelector('#__cp_cancel__')?.addEventListener('click', () => cleanup(null));
+  panel.querySelector('#__cp_verify__')?.addEventListener('click', handleVerify);
   panel.querySelector('#__cp_save__')?.addEventListener('click', handleSave);
   panel.querySelectorAll('[data-rmc]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
@@ -222,6 +225,98 @@ function renderPanel() {
       if (sel) { excludeSelectors.delete(sel); syncAllHighlights(); renderPanel(); }
     });
   });
+}
+
+let verifying = false;
+
+async function handleVerify() {
+  if (verifying || contentSelectors.size === 0) return;
+  verifying = true;
+
+  const statusEl = document.getElementById('__cp_verify_status__');
+  const verifyBtn = document.getElementById('__cp_verify__') as HTMLButtonElement;
+  if (verifyBtn) { verifyBtn.disabled = true; verifyBtn.textContent = '验证中…'; }
+  if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = '正在滚动验证…'; }
+
+  const allSels = Array.from(contentSelectors).join(', ');
+  const excludeSels = Array.from(excludeSelectors);
+
+  const firstEl = safeQueryAll(allSels)[0];
+  let scrollEl: Element = document.documentElement;
+  if (firstEl) {
+    let p: Element | null = firstEl.parentElement;
+    while (p && p !== document.documentElement) {
+      const s = getComputedStyle(p);
+      if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && p.scrollHeight > p.clientHeight + 50) {
+        scrollEl = p;
+        break;
+      }
+      p = p.parentElement;
+    }
+  }
+
+  const originalTop = scrollEl.scrollTop;
+  const step = Math.max(scrollEl.clientHeight * 0.8, 300);
+  let totalFound = 0;
+  const seenFp = new Set<string>();
+
+  clearHighlight(CLS_CONTENT);
+  clearHighlight(CLS_EXCLUDE);
+
+  scrollEl.scrollTop = 0;
+  await new Promise((r) => setTimeout(r, 400));
+
+  const maxIter = Math.ceil(scrollEl.scrollHeight / step) + 5;
+  let stableCount = 0;
+
+  function highlightAndCount() {
+    let els: Element[] = [];
+    try { els = Array.from(document.querySelectorAll(allSels)); } catch { /* skip */ }
+
+    for (const el of els) {
+      const panel = document.getElementById(PANEL_ID);
+      if (panel?.contains(el)) continue;
+      const fp = (el.textContent ?? '').trim().slice(0, 200);
+      if (!fp || seenFp.has(fp)) continue;
+      seenFp.add(fp);
+      totalFound++;
+      el.classList.add(CLS_CONTENT);
+    }
+
+    if (excludeSels.length > 0) {
+      const exAll = excludeSels.join(', ');
+      try { document.querySelectorAll(exAll).forEach((el) => el.classList.add(CLS_EXCLUDE)); } catch { /* skip */ }
+    }
+
+    if (statusEl) statusEl.textContent = `验证中… 已发现 ${totalFound} 个内容块 (scrollTop=${Math.round(scrollEl.scrollTop)})`;
+  }
+
+  highlightAndCount();
+
+  for (let i = 0; i < maxIter; i++) {
+    const prevTop = scrollEl.scrollTop;
+    scrollEl.scrollTop += step;
+    await new Promise((r) => setTimeout(r, 150));
+
+    if (Math.abs(scrollEl.scrollTop - prevTop) < 2) {
+      stableCount++;
+      if (stableCount >= 2) break;
+      await new Promise((r) => setTimeout(r, 150));
+      continue;
+    }
+    stableCount = 0;
+    highlightAndCount();
+  }
+
+  highlightAndCount();
+
+  scrollEl.scrollTop = originalTop;
+
+  if (statusEl) statusEl.textContent = `验证完成：共发现 ${totalFound} 个内容块`;
+  if (verifyBtn) { verifyBtn.disabled = false; verifyBtn.textContent = '验证'; }
+  verifying = false;
+
+  syncAllHighlights();
 }
 
 function handleSave() {
